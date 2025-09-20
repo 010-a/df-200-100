@@ -1,3 +1,5 @@
+# simple_diffusion/model/unet.py
+
 import math
 import torch
 from torch import nn
@@ -44,7 +46,7 @@ def sinusoidal_embedding(timesteps, dim):
 
 
 class ResidualBlock(nn.Module):
-
+    # (这个类没有变化)
     def __init__(self,
                  in_channels,
                  out_channels,
@@ -99,9 +101,9 @@ class ResidualBlock(nn.Module):
 class UNet(nn.Module):
 
     def __init__(self,
-                 in_channels,
+                 in_channels,  # 这里的 in_channels 仍然是3
                  hidden_dims=[64, 128, 256, 512],
-                 image_size=64,
+                 image_size=128,  # 改为高分辨率尺寸
                  use_flash_attn=False):
         super(UNet, self).__init__()
 
@@ -116,15 +118,20 @@ class UNet(nn.Module):
             nn.Linear(timestep_input_dim, time_embed_dim), nn.SiLU(),
             nn.Linear(time_embed_dim, time_embed_dim))
 
-        self.init_conv = nn.Conv2d(in_channels,
+        # --- [核心修改 1] ---
+        # 初始卷积层的输入通道数变为两倍（例如 3+3=6），
+        # 因为我们将拼接 '加噪的高分辨率图' 和 '上采样的低分辨率图'
+        self.init_conv = nn.Conv2d(in_channels * 2,
                                    out_channels=hidden_dims[0],
                                    kernel_size=3,
                                    stride=1,
                                    padding=1)
 
+        # (后面的__init__内容没有变化)
         down_blocks = []
-
         in_dim = hidden_dims[0]
+        # ... (此处到 self.conv_out 的定义都保持不变)
+        # (代码过长，此处省略，请保留您文件中的这部分原始内容)
         for idx, hidden_dim in enumerate(hidden_dims[1:]):
             is_last = idx >= (len(hidden_dims) - 2)
             is_first = idx == 0
@@ -165,7 +172,26 @@ class UNet(nn.Module):
                                        time_embed_dim)
         self.conv_out = nn.Conv2d(hidden_dims[0], out_channels=3, kernel_size=1)
 
-    def forward(self, sample, timesteps):
+    def forward(self, sample, timesteps, condition=None):
+        """
+        Args:
+            sample (torch.Tensor): 加噪的高分辨率图像 (B, C, H, W)
+            timesteps (torch.Tensor): 时间步 (B,)
+            condition (torch.Tensor, optional): 作为条件的低分辨率图像 (B, C, h, w).
+        """
+        # --- [核心修改 2] ---
+        # 如果没有提供条件，创建一个全零的张量以保持代码兼容性
+        if condition is None:
+            condition = torch.zeros_like(sample)
+
+        # 使用双线性插值将条件图像（低分辨率）上采样到与样本（高分辨率）相同的尺寸
+        condition_upsampled = F.interpolate(condition, size=sample.shape[-2:], mode='bilinear', align_corners=False)
+
+        # 沿着通道维度将 '加噪图' 和 '条件图' 拼接起来
+        # 维度变化示例: (B, 3, 128, 128) + (B, 3, 128, 128) -> (B, 6, 128, 128)
+        x = torch.cat([sample, condition_upsampled], dim=1)
+
+        # --- 后续流程 ---
         if not torch.is_tensor(timesteps):
             timesteps = torch.tensor([timesteps],
                                      dtype=torch.long,
@@ -177,10 +203,14 @@ class UNet(nn.Module):
         t_emb = sinusoidal_embedding(timesteps, self.hidden_dims[0])
         t_emb = self.time_embedding(t_emb)
 
-        x = self.init_conv(sample)
+        # 将拼接后的 x 传递给初始卷积层
+        x = self.init_conv(x)
         r = x.clone()
 
+        # (forward方法的其余部分完全保持不变，因为所有维度都已对齐)
         skips = []
+        # ... (此处到 return 之前的代码都保持不变)
+        # (代码过长，此处省略，请保留您文件中的这部分原始内容)
         for block1, block2, attn, downsample in self.down_blocks:
             x = block1(x, t_emb)
             skips.append(x)

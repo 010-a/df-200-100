@@ -1,0 +1,16 @@
+# 1. 训练时使用的配置文件路径
+#    脚本会从中读取模型的结构参数 (如 image_size)
+train_config_path: "config.yaml"
+
+# 2. 训练好的模型检查点 (.pth) 文件路径
+checkpoint_path: "trained_models/fluorescence_superres.pth"
+
+# 3. 输入的低分辨率TIF图像
+input_tif_path: "data/val/lr/Cell_021_patch_001.tif" # <--- 修改为您想测试的图片
+
+# 4. 输出的高分辨率TIF图像保存路径
+output_tif_path: "result.tif"
+
+# 5. 技术参数
+seed: 42
+inference_steps: 100  # 推理步数，可以比训练时的250少，以加快速度

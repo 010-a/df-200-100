@@ -114,13 +114,14 @@ class DDIMScheduler:
 
     @torch.no_grad()
     def generate(
-        self,
-        model,
-        batch_size=1,
-        generator=None,
-        eta=1.0,
-        num_inference_steps=50,
-        device=None,
+            self,
+            model,
+            batch_size=1,
+            generator=None,
+            eta=1.0,
+            num_inference_steps=50,
+            device=None,
+            condition=None,  # <-- 新增参数
     ):
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         image = torch.randn(
@@ -130,11 +131,16 @@ class DDIMScheduler:
         self._set_timesteps(num_inference_steps)
 
         for t in tqdm(self.timesteps):
-            model_output = model(image, t)["sample"]
+            # 原始代码: model_output = model(image, t)["sample"]
+            # --- 修改开始 ---
+            # 将 condition 传递给模型
+            model_output = model(image, t, condition=condition)["sample"]
+            # --- 修改结束 ---
+
             # predict previous mean of image x_t-1 and add variance depending on eta
             # do x_t -> x_t-1
             image = self._step(model_output, t, image, eta, generator=generator)
-        
+
         image = unnormalize_to_zero_to_one(image)
         return {"sample": image.cpu().permute(0, 2, 3, 1).numpy(), "sample_pt": image}
 

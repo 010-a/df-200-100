@@ -1,0 +1,30 @@
+# 路径和文件名配置
+data_path: "./data/200-150nm"                                     # 数据集根目录 (包含 train/val)
+output_dir: "trained_models/fluorescence_superres.pth"  # 模型保存路径
+samples_dir: "test_samples/"                            # 训练中生成的样本保存目录
+pretrained_model_path: null                             # 如果要继续训练，请指定模型路径，否则为 null
+
+# 数据集和图像尺寸配置
+image_size: 128            # 高分辨率图像的尺寸
+frames_per_file: 9         # 每个TIF文件包含的帧数
+
+# 训练超参数
+train_batch_size: 4        # 训练批次大小，根据显存调整
+eval_batch_size: 8         # 验证/采样时生成的图像数量
+num_epochs: 200            # 总训练轮次
+save_model_steps: 1000     # 每隔多少步保存一次模型和样本
+learning_rate: 0.0001      # 学习率 (1e-4)
+lr_scheduler: "cosine"     # 学习率调度器类型
+lr_warmup_steps: 500       # 学习率预热步数
+
+# 优化器和EMA配置
+adam_beta1: 0.9
+adam_beta2: 0.99
+adam_weight_decay: 0.000001 # 权重衰减 (1e-6)
+gamma: 0.996               # EMA的初始系数
+
+# 其他技术配置
+fp16_precision: true       # 是否使用FP16混合精度训练
+gradient_accumulation_steps: 1
+use_clip_grad: false       # 是否使用梯度裁剪
+use_flash_attn: false      # 是否使用 Flash Attention (需要特定硬件和环境)

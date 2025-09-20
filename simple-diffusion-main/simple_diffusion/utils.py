@@ -1,61 +1,42 @@
+# simple_diffusion/utils.py (修复后版本)
+
 import os
 from datetime import datetime
-
 from PIL import Image
 import torch
 import numpy as np
 from torchvision import utils
-import matplotlib.pyplot as plt
 
 
-def save_images(generated_images, epoch, args, contexts=None):
+def save_images(generated_images, epoch, args):
+    """
+    保存生成的图像样本。
+    'args' 现在是一个 SimpleNamespace 对象，从 config.yaml 加载。
+    """
     images = generated_images["sample"]
+    # 将图像从 [0, 1] 范围转换回 [0, 255] 整数范围
     images_processed = (images * 255).round().astype("uint8")
 
     current_date = datetime.today().strftime('%Y%m%d_%H%M%S')
-    out_dir = f"./{args.samples_dir}/{current_date}_{args.dataset_name}_{epoch}/"
-    os.makedirs(out_dir)
+
+    # --- [核心修复] ---
+    # 不再使用 'dataset_name'，因为我们的config里没有这个字段。
+    # 创建一个更通用的文件夹名，例如 'epoch_0_step_1000'
+    # 'os.path.basename(args.output_dir).split('.')[0]' 会从模型路径中提取文件名，例如 'fluorescence_superres'
+    model_name_prefix = os.path.basename(args.output_dir).split('.')[0]
+    out_dir = os.path.join(args.samples_dir, f"{model_name_prefix}_epoch_{epoch}")
+    # --- 修复结束 ---
+
+    os.makedirs(out_dir, exist_ok=True)
+
     for idx, image in enumerate(images_processed):
         image = Image.fromarray(image)
-        if contexts:
-            image.save(f"{out_dir}/{epoch}_{contexts[idx]}_{idx}.jpeg")
-        else:
-            image.save(f"{out_dir}/{epoch}_{idx}.jpeg")
+        # 保存为PNG格式，因为它无损且通用
+        image.save(os.path.join(out_dir, f"{idx:03d}.png"))
 
+    # 将所有样本图片拼接成一张网格图，方便预览
     utils.save_image(generated_images["sample_pt"],
-                     f"{out_dir}/{epoch}_grid.jpeg",
-                     nrow=args.eval_batch_size // 4)
+                     os.path.join(out_dir, "grid.png"),
+                     nrow=4)  # 每行显示4张图片
 
-
-def unnormalize_to_zero_to_one(t):
-    return (t + 1) * 0.5
-
-
-def numpy_to_pil(images):
-    if images.ndim == 3:
-        images = images[None, ...]
-    images = (images * 255).round().astype("uint8")
-    pil_images = [Image.fromarray(image) for image in images]
-
-    return pil_images
-
-
-def match_shape(values, broadcast_array, tensor_format="pt"):
-    values = values.flatten()
-
-    while len(values.shape) < len(broadcast_array.shape):
-        values = values[..., None]
-    if tensor_format == "pt":
-        values = values.to(broadcast_array.device)
-
-    return values
-
-
-def clip(tensor, min_value=None, max_value=None):
-    if isinstance(tensor, np.ndarray):
-        return np.clip(tensor, min_value, max_value)
-    elif isinstance(tensor, torch.Tensor):
-        return torch.clamp(tensor, min_value, max_value)
-
-    raise ValueError("Tensor format is not valid is not valid - " \
-        f"should be numpy array or torch tensor. Got {type(tensor)}.")
+# (删除了原文件中其他不再使用的函数)
