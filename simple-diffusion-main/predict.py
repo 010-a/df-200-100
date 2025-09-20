@@ -1,4 +1,4 @@
-# generate.py (最终版本，使用YAML配置)
+# generate.py (最终完整版)
 
 import argparse
 import torch
@@ -8,16 +8,12 @@ import numpy as np
 import tifffile
 from PIL import Image
 
-# 确保可以从项目根目录正确导入我们自己的模块
 from simple_diffusion.model import UNet
 from simple_diffusion.scheduler import DDIMScheduler
 
 
 def load_and_preprocess_input(tif_path, device):
-    """
-    加载并预处理单张低分辨率TIF图像，使其符合模型输入要求。
-    这个过程必须与 dataset.py 中的预处理完全一致。
-    """
+    """加载并预处理单张低分辨率TIF图像，使其符合模型输入要求。"""
     stack = tifffile.imread(tif_path)
     image = stack[0] if stack.ndim == 3 else stack
     image = image.astype(np.float32) / 65535.0
@@ -27,22 +23,18 @@ def load_and_preprocess_input(tif_path, device):
 
 
 def main(gen_config):
-    # --- 1. 加载训练配置，以获取模型结构参数 ---
     with open(gen_config.train_config_path, 'r', encoding='utf-8') as f:
         train_config_dict = yaml.safe_load(f)
     train_config = SimpleNamespace(**train_config_dict)
 
-    # --- 2. 设置环境 ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     generator = torch.manual_seed(gen_config.seed)
     print(f"使用设备: {device}")
 
-    # --- 3. 初始化模型和调度器 ---
     model = UNet(3, image_size=train_config.image_size, hidden_dims=[64, 128, 256, 512],
                  use_flash_attn=train_config.use_flash_attn)
     noise_scheduler = DDIMScheduler(num_train_timesteps=1000, beta_schedule="cosine")
 
-    # --- 4. 加载训练好的权重 ---
     print(f"正在从 {gen_config.checkpoint_path} 加载模型权重...")
     checkpoint = torch.load(gen_config.checkpoint_path, map_location=device)
 
@@ -56,11 +48,9 @@ def main(gen_config):
     model.to(device)
     model.eval()
 
-    # --- 5. 加载并预处理输入图像 ---
     print(f"正在加载并预处理输入图像: {gen_config.input_tif_path}")
     low_res_tensor = load_and_preprocess_input(gen_config.input_tif_path, device)
 
-    # --- 6. 执行推理 ---
     print(f"开始执行扩散模型反向去噪过程 (共 {gen_config.inference_steps} 步)...")
     with torch.no_grad():
         generated_images = noise_scheduler.generate(
@@ -69,10 +59,10 @@ def main(gen_config):
             generator=generator,
             eta=1.0,
             batch_size=1,
-            condition=low_res_tensor
+            condition=low_res_tensor,
+            show_progress=True
         )
 
-    # --- 7. 后处理并保存结果 ---
     output_image_numpy = generated_images["sample"][0]
     output_image_16bit = (output_image_numpy * 65535.0).astype(np.uint16)
 

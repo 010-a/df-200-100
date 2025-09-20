@@ -1,4 +1,4 @@
-# train.py (最终完整版)
+# train.py (最终完整修复版)
 
 import argparse
 import numpy as np
@@ -6,7 +6,7 @@ import random
 import torch
 import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 import os
@@ -14,7 +14,6 @@ import yaml
 from types import SimpleNamespace
 import warnings
 
-# --- 导入所有必要的库 ---
 from diffusers.optimization import get_scheduler
 from torchinfo import summary
 from simple_diffusion.scheduler import DDIMScheduler
@@ -23,7 +22,6 @@ from simple_diffusion.utils import save_images
 from simple_diffusion.dataset import MultiFrameTIFDataset
 from simple_diffusion.ema import EMA
 
-# --- 抑制底层库的警告 (可选) ---
 warnings.filterwarnings("ignore", category=UserWarning,
                         message="Unable to find acceptable character detection dependency")
 
@@ -43,10 +41,13 @@ def main(config):
     os.makedirs(os.path.dirname(config.output_dir), exist_ok=True)
     os.makedirs(config.samples_dir, exist_ok=True)
 
-    # --- 1. 初始化模型和优化器 ---
+    # --- 1. 初始化模型、调度器和优化器 ---
     model = UNet(3, image_size=config.image_size, hidden_dims=[64, 128, 256, 512],
                  use_flash_attn=config.use_flash_attn)
     model = model.to(device)
+
+    noise_scheduler = DDIMScheduler(num_train_timesteps=n_timesteps,
+                                    beta_schedule="cosine")
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -57,15 +58,14 @@ def main(config):
 
     start_epoch = 0
     global_step = 0
+    checkpoint = None
 
     # --- 2. 检查并从断点恢复 ---
-    if config.pretrained_model_path:
+    if config.pretrained_model_path and os.path.exists(config.pretrained_model_path):
         print(f"从检查点恢复训练: {config.pretrained_model_path}")
         checkpoint = torch.load(config.pretrained_model_path, map_location=device)
 
         model.load_state_dict(checkpoint['model_state'])
-
-        # 只有在检查点中存在时才加载优化器状态，以保持向后兼容性
         if 'optimizer_state' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state'])
 
@@ -91,7 +91,7 @@ def main(config):
         )
         val_dataloader = DataLoader(val_dataset, batch_size=config.eval_batch_size, shuffle=False)
         fixed_val_batch = next(iter(val_dataloader))
-    except (FileNotFoundError, StopIteration):
+    except (FileNotFoundError, StopIteration, ValueError):
         print("验证数据未找到或为空。将从训练集中取样用于可视化。")
         fixed_val_batch = next(iter(train_dataloader))
 
@@ -102,7 +102,7 @@ def main(config):
     total_num_steps = (steps_per_epoch * config.num_epochs) // config.gradient_accumulation_steps
 
     ema = EMA(model, config.gamma, total_num_steps)
-    if config.pretrained_model_path and 'ema_model_state' in checkpoint:
+    if checkpoint and 'ema_model_state' in checkpoint:
         ema.ema_model.load_state_dict(checkpoint['ema_model_state'])
 
     lr_scheduler = get_scheduler(
@@ -112,16 +112,16 @@ def main(config):
         num_training_steps=total_num_steps,
     )
 
-    # 将调度器快进到正确的步数以恢复状态
     for _ in range(global_step):
         lr_scheduler.step()
 
     summary(model, [(1, 3, config.image_size, config.image_size), (1,), (1, 3, 64, 64)], verbose=1)
+
     scaler = GradScaler(enabled=config.fp16_precision)
 
     # --- 5. 训练循环 ---
     for epoch in range(start_epoch, config.num_epochs):
-        progress_bar = tqdm(total=steps_per_epoch, desc=f"Epoch {epoch}", initial=0, leave=True)
+        progress_bar = tqdm(total=steps_per_epoch, desc=f"Epoch {epoch}", leave=True)
 
         for step, batch in enumerate(train_dataloader):
             high_res_images = batch["high_res"].to(device)
@@ -133,7 +133,7 @@ def main(config):
             noisy_images = noise_scheduler.add_noise(high_res_images, noise, timesteps)
 
             optimizer.zero_grad(set_to_none=True)
-            with autocast(enabled=config.fp16_precision):
+            with torch.cuda.amp.autocast(enabled=config.fp16_precision):
                 noise_pred = model(noisy_images, timesteps, condition=low_res_images)["sample"]
                 loss = F.l1_loss(noise_pred, noise)
 
@@ -163,8 +163,6 @@ def main(config):
                         condition=fixed_val_low_res, show_progress=True
                     )
                     save_images(generated_images, epoch, config)
-
-                    # 保存完整的检查点
                     torch.save(
                         {'epoch': epoch, 'global_step': global_step, 'model_state': model.state_dict(),
                          'ema_model_state': ema.ema_model.state_dict(), 'optimizer_state': optimizer.state_dict()},
