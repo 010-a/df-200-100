@@ -1,4 +1,4 @@
-# generate.py (最终完整版)
+# predict.py (最终版 - 输出单通道灰度图)
 
 import argparse
 import torch
@@ -6,79 +6,88 @@ import yaml
 from types import SimpleNamespace
 import numpy as np
 import tifffile
-from PIL import Image
+from tqdm import tqdm
+from pathlib import Path
 
 from simple_diffusion.model import UNet
 from simple_diffusion.scheduler import DDIMScheduler
 
 
-def load_and_preprocess_input(tif_path, device):
-    """加载并预处理单张低分辨率TIF图像，使其符合模型输入要求。"""
-    stack = tifffile.imread(tif_path)
-    image = stack[0] if stack.ndim == 3 else stack
-    image = image.astype(np.float32) / 65535.0
-    tensor = torch.from_numpy(image).unsqueeze(0).repeat(3, 1, 1)
+def preprocess_single_frame(frame_np, device):
+    tensor = torch.from_numpy(frame_np.astype(np.float32) / 65535.0)
+    tensor = tensor.unsqueeze(0).repeat(3, 1, 1)
     tensor = tensor * 2.0 - 1.0
     return tensor.unsqueeze(0).to(device)
 
 
-def main(gen_config):
-    with open(gen_config.train_config_path, 'r', encoding='utf-8') as f:
-        train_config_dict = yaml.safe_load(f)
-    train_config = SimpleNamespace(**train_config_dict)
+def postprocess_single_frame_grayscale(frame_tensor):
+    """
+    对单帧的输出张量进行后处理，取3通道平均值，并转换回16-bit NumPy图像。
+    """
+    # [核心修改] 在通道维度上取平均值，并移除通道维度
+    frame_tensor_gray = frame_tensor.mean(dim=0, keepdim=False)
+
+    # 将 [0, 1] 范围转换回 [0, 65535]
+    frame_np_gray = (frame_tensor_gray.cpu().numpy() * 65535.0).astype(np.uint16)
+    return frame_np_gray
+
+
+def main(config):
+    with open(config.train_config_path, 'r', encoding='utf-8') as f:
+        train_config = SimpleNamespace(**yaml.safe_load(f))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    generator = torch.manual_seed(gen_config.seed)
+    generator = torch.manual_seed(config.seed)
     print(f"使用设备: {device}")
 
     model = UNet(3, image_size=train_config.image_size, hidden_dims=[64, 128, 256, 512],
-                 use_flash_attn=train_config.use_flash_attn)
+                 use_flash_attn=train_config.use_flash_attn).to(device)
     noise_scheduler = DDIMScheduler(num_train_timesteps=1000, beta_schedule="cosine")
 
-    print(f"正在从 {gen_config.checkpoint_path} 加载模型权重...")
-    checkpoint = torch.load(gen_config.checkpoint_path, map_location=device)
-
-    if 'ema_model_state' in checkpoint:
-        model.load_state_dict(checkpoint['ema_model_state'])
-        print("已成功加载 EMA 模型权重。")
-    else:
-        model.load_state_dict(checkpoint['model_state'])
-        print("警告: 未找到 EMA 权重，已加载标准模型权重。")
-
-    model.to(device)
+    print(f"正在从 {config.checkpoint_path} 加载模型权重...")
+    checkpoint = torch.load(config.checkpoint_path, map_location=device)
+    state_dict_key = 'ema_model_state' if 'ema_model_state' in checkpoint else 'model_state'
+    model.load_state_dict(checkpoint[state_dict_key])
+    print(f"已成功加载 '{state_dict_key}' 的权重。")
     model.eval()
 
-    print(f"正在加载并预处理输入图像: {gen_config.input_tif_path}")
-    low_res_tensor = load_and_preprocess_input(gen_config.input_tif_path, device)
+    print(f"正在加载输入文件: {config.input_tif_path}")
+    input_stack = tifffile.imread(config.input_tif_path)
+    if input_stack.ndim != 3:
+        raise ValueError(f"输入文件必须是一个3D堆栈 (frames, height, width)，但检测到维度为 {input_stack.ndim}")
 
-    print(f"开始执行扩散模型反向去噪过程 (共 {gen_config.inference_steps} 步)...")
+    num_frames = input_stack.shape[0]
+    print(f"检测到 {num_frames} 帧图像，开始逐帧处理...")
+
+    predicted_frames = []
     with torch.no_grad():
-        generated_images = noise_scheduler.generate(
-            model,
-            num_inference_steps=gen_config.inference_steps,
-            generator=generator,
-            eta=1.0,
-            batch_size=1,
-            condition=low_res_tensor,
-            show_progress=True
-        )
+        for i in tqdm(range(num_frames), desc="正在预测帧"):
+            single_frame_np = input_stack[i]
+            low_res_tensor = preprocess_single_frame(single_frame_np, device)
 
-    output_image_numpy = generated_images["sample"][0]
-    output_image_16bit = (output_image_numpy * 65535.0).astype(np.uint16)
+            generated_output = noise_scheduler.generate(
+                model, num_inference_steps=config.inference_steps,
+                generator=generator, batch_size=1, condition=low_res_tensor
+            )
 
-    tifffile.imwrite(gen_config.output_tif_path, output_image_16bit)
-    print(f"推理完成！结果已保存至: {gen_config.output_tif_path}")
+            predicted_frame_tensor = generated_output["sample_pt"][0]
+            # [核心修改] 调用新的后处理函数
+            predicted_frames.append(postprocess_single_frame_grayscale(predicted_frame_tensor))
+
+    final_output_stack = np.stack(predicted_frames, axis=0)  # Shape: (9, 64, 64)
+    print(f"所有帧处理完毕，正在保存结果到: {config.output_tif_path}")
+
+    output_path = Path(config.output_tif_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tifffile.imwrite(output_path, final_output_stack)
+    print("预测完成！")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="generate_config.yaml",
-                        help="Path to the generation config file.")
+    parser.add_argument("--config", type=str, default="predict.yaml", help="Path to the prediction config file.")
     args = parser.parse_args()
-
     with open(args.config, 'r', encoding='utf-8') as f:
-        gen_config_dict = yaml.safe_load(f)
-
-    gen_config = SimpleNamespace(**gen_config_dict)
-
-    main(gen_config)
+        config = SimpleNamespace(**yaml.safe_load(f))
+    main(config)

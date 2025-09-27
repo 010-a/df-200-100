@@ -1,16 +1,19 @@
-# 1. 训练时使用的配置文件路径
-#    脚本会从中读取模型的结构参数 (如 image_size)
+# --- 1. 训练时使用的配置文件 ---
+# 需要它来获取模型的结构参数，如 image_size
 train_config_path: "config.yaml"
 
-# 2. 训练好的模型检查点 (.pth) 文件路径
-checkpoint_path: "trained_models/fluorescence_superres.pth"
+# --- 2. 要使用的模型检查点 ---
+# 强烈建议使用训练过程中产生的 best_model.pth
+checkpoint_path: "trained_models/my_dn_experiment/best_model.pth" # <-- [重要] 修改为您最佳模型的路径
 
-# 3. 输入的低分辨率TIF图像
-input_tif_path: "data/val/lr/Cell_021_patch_001.tif" # <--- 修改为您想测试的图片
+# --- 3. 输入和输出文件 ---
+# 输入可以是一个包含多帧（例如9帧）的低分辨率TIF
+input_tif_path: "data/noise-lr/predict/lr/Cell_025_patch_049.tif" # <-- [重要] 修改为您想预测的文件
 
-# 4. 输出的高分辨率TIF图像保存路径
-output_tif_path: "result.tif"
+# 输出将会是一个包含同样帧数的高分辨率TIF
+output_tif_path: "data/noise-lr/predict/hr/result_multiframe.tif"
 
-# 5. 技术参数
+# --- 4. 技术参数 ---
 seed: 42
-inference_steps: 100  # 推理步数，可以比训练时的250少，以加快速度
+# 推理步数，可以适当减少以加快速度（例如 50-150）
+inference_steps: 100
